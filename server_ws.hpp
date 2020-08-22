@@ -91,10 +91,20 @@ namespace SimpleWeb {
         return endpoint;
       }
 
+      asio::ip::tcp::endpoint local_endpoint() const noexcept {
+        try {
+          if(auto connection = this->connection.lock())
+            return connection->socket->lowest_layer().local_endpoint();
+        }
+        catch(...) {
+        }
+        return asio::ip::tcp::endpoint();
+      }
+
       /// Deprecated, please use remote_endpoint().address().to_string() instead.
       DEPRECATED std::string remote_endpoint_address() const noexcept {
         try {
-          return socket->lowest_layer().remote_endpoint().address().to_string();
+          return endpoint.address().to_string();
         }
         catch(...) {
         }
@@ -104,7 +114,7 @@ namespace SimpleWeb {
       /// Deprecated, please use remote_endpoint().port() instead.
       DEPRECATED unsigned short remote_endpoint_port() const noexcept {
         try {
-          return socket->lowest_layer().remote_endpoint().port();
+          return endpoint.port();
         }
         catch(...) {
         }
@@ -363,7 +373,7 @@ namespace SimpleWeb {
       std::unique_lock<std::mutex> lock(start_stop_mutex);
 
       asio::ip::tcp::endpoint endpoint;
-      if(config.address.size() > 0)
+      if(!config.address.empty())
         endpoint = asio::ip::tcp::endpoint(make_address(config.address), config.port);
       else
         endpoint = asio::ip::tcp::endpoint(asio::ip::tcp::v6(), config.port);
@@ -375,7 +385,17 @@ namespace SimpleWeb {
 
       if(!acceptor)
         acceptor = std::unique_ptr<asio::ip::tcp::acceptor>(new asio::ip::tcp::acceptor(*io_service));
-      acceptor->open(endpoint.protocol());
+      try {
+        acceptor->open(endpoint.protocol());
+      }
+      catch(const system_error &error) {
+        if(error.code() == asio::error::address_family_not_supported && config.address.empty()) {
+          endpoint = asio::ip::tcp::endpoint(asio::ip::tcp::v4(), config.port);
+          acceptor->open(endpoint.protocol());
+        }
+        else
+          throw;
+      }
       acceptor->set_option(asio::socket_base::reuse_address(config.reuse_address));
       if(config.fast_open) {
 #if defined(__linux__) && defined(TCP_FASTOPEN)
@@ -538,6 +558,12 @@ namespace SimpleWeb {
             auto sha1 = Crypto::sha1(key_it->second + ws_magic_string);
             response_header.emplace("Sec-WebSocket-Accept", Crypto::Base64::encode(sha1));
 
+            try {
+              connection->endpoint = connection->socket->lowest_layer().remote_endpoint();
+            }
+            catch(...) {
+            }
+
             if(regex_endpoint.second.on_handshake)
               status_code = regex_endpoint.second.on_handshake(connection, response_header);
 
@@ -560,12 +586,6 @@ namespace SimpleWeb {
               return;
             if(status_code != StatusCode::information_switching_protocols)
               return;
-
-            try {
-              connection->endpoint = connection->socket->lowest_layer().remote_endpoint();
-            }
-            catch(...) {
-            }
 
             if(!ec) {
               connection_open(connection, regex_endpoint.second);
