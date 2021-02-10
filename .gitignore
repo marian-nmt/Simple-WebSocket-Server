@@ -17,6 +17,6 @@ compile_commands.json
 # executables
 ws_examples
 wss_examples
-crypto_test
-io_test
-parse_test
+swss_crypto_test
+swss_io_test
+swss_parse_test
