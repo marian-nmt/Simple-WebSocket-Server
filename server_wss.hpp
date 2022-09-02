@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <openssl/ssl.h>
 
-#ifdef USE_STANDALONE_ASIO
+#ifdef ASIO_STANDALONE
 #include <asio/ssl.hpp>
 #else
 #include <boost/asio/ssl.hpp>
@@ -23,12 +23,21 @@ namespace SimpleWeb {
     /**
      * Constructs a server object.
      *
-     * @param certification_file If non-empty, sends the given certification file to client.
+     * @param certification_file Sends the given certification file to client.
      * @param private_key_file   Specifies the file containing the private key for certification_file.
      * @param verify_file        If non-empty, use this certificate authority file to perform verification of client's certificate and hostname according to RFC 2818.
      */
     SocketServer(const std::string &certification_file, const std::string &private_key_file, const std::string &verify_file = std::string())
-        : SocketServerBase<WSS>(443), context(asio::ssl::context::tlsv12) {
+        : SocketServerBase<WSS>(443),
+#if(ASIO_STANDALONE && ASIO_VERSION >= 101300) || BOOST_ASIO_VERSION >= 101300
+          context(asio::ssl::context::tls_server) {
+      // Disabling TLS 1.0 and 1.1 (see RFC 8996)
+      context.set_options(asio::ssl::context::no_tlsv1);
+      context.set_options(asio::ssl::context::no_tlsv1_1);
+#else
+          context(asio::ssl::context::tlsv12) {
+#endif
+
       context.use_certificate_chain_file(certification_file);
       context.use_private_key_file(private_key_file, asio::ssl::context::pem);
 

@@ -12,13 +12,13 @@
 #include <string>
 #include <unordered_map>
 
-#ifndef DEPRECATED
+#ifndef SW_DEPRECATED
 #if defined(__GNUC__) || defined(__clang__)
-#define DEPRECATED __attribute__((deprecated))
+#define SW_DEPRECATED __attribute__((deprecated))
 #elif defined(_MSC_VER)
-#define DEPRECATED __declspec(deprecated)
+#define SW_DEPRECATED __declspec(deprecated)
 #else
-#define DEPRECATED
+#define SW_DEPRECATED
 #endif
 #endif
 
@@ -27,7 +27,7 @@
 namespace SimpleWeb {
   using string_view = std::string_view;
 }
-#elif !defined(USE_STANDALONE_ASIO)
+#elif !defined(ASIO_STANDALONE)
 #include <boost/utility/string_ref.hpp>
 namespace SimpleWeb {
   using string_view = boost::string_ref;

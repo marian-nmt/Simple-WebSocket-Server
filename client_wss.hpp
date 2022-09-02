@@ -3,7 +3,7 @@
 
 #include "client_ws.hpp"
 
-#ifdef USE_STANDALONE_ASIO
+#ifdef ASIO_STANDALONE
 #include <asio/ssl.hpp>
 #else
 #include <boost/asio/ssl.hpp>
@@ -27,7 +27,16 @@ namespace SimpleWeb {
     SocketClient(const std::string &server_port_path, bool verify_certificate = true,
                  const std::string &certification_file = std::string(), const std::string &private_key_file = std::string(),
                  const std::string &verify_file = std::string())
-        : SocketClientBase<WSS>::SocketClientBase(server_port_path, 443), context(asio::ssl::context::tlsv12) {
+        : SocketClientBase<WSS>::SocketClientBase(server_port_path, 443),
+#if(ASIO_STANDALONE && ASIO_VERSION >= 101300) || BOOST_ASIO_VERSION >= 101300
+          context(asio::ssl::context::tls_client) {
+      // Disabling TLS 1.0 and 1.1 (see RFC 8996)
+      context.set_options(asio::ssl::context::no_tlsv1);
+      context.set_options(asio::ssl::context::no_tlsv1_1);
+#else
+          context(asio::ssl::context::tlsv12) {
+#endif
+
       if(certification_file.size() > 0 && private_key_file.size() > 0) {
         context.use_certificate_chain_file(certification_file);
         context.use_private_key_file(private_key_file, asio::ssl::context::pem);
@@ -87,7 +96,10 @@ namespace SimpleWeb {
                 std::ostream ostream(streambuf.get());
                 auto host_port = this->host + ':' + std::to_string(this->port);
                 ostream << "CONNECT " + host_port + " HTTP/1.1\r\n"
-                        << "Host: " << host_port << "\r\n\r\n";
+                        << "Host: " << host_port << "\r\n";
+                if(!this->config.proxy_auth.empty())
+                  ostream << "Proxy-Authorization: Basic " << Crypto::Base64::encode(this->config.proxy_auth) << "\r\n";
+                ostream << "\r\n";
                 connection->set_timeout(this->config.timeout_request);
                 asio::async_write(connection->socket->next_layer(), *streambuf, [this, connection, streambuf](const error_code &ec, std::size_t /*bytes_transferred*/) {
                   connection->cancel_timeout();
