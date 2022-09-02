@@ -79,7 +79,7 @@ namespace SimpleWeb {
       friend class SocketServer<socket_type>;
 
     public:
-      Connection(std::unique_ptr<socket_type> &&socket_) noexcept : socket(std::move(socket_)), timeout_idle(0), closed(false) {}
+      Connection(std::unique_ptr<socket_type> &&socket_) noexcept : socket(std::move(socket_)), timeout_idle(0), close_sent(false) {}
 
       std::string method, path, query_string, http_version;
 
@@ -90,8 +90,8 @@ namespace SimpleWeb {
     private:
       /// Used to call SocketServer::upgrade.
       template <typename... Args>
-      Connection(std::shared_ptr<ScopeRunner> handler_runner_, long timeout_idle, Args &&... args) noexcept
-          : handler_runner(std::move(handler_runner_)), socket(new socket_type(std::forward<Args>(args)...)), timeout_idle(timeout_idle), closed(false) {}
+      Connection(std::shared_ptr<ScopeRunner> handler_runner_, long timeout_idle, Args &&...args) noexcept
+          : handler_runner(std::move(handler_runner_)), socket(new socket_type(std::forward<Args>(args)...)), timeout_idle(timeout_idle), close_sent(false) {}
 
       std::shared_ptr<ScopeRunner> handler_runner;
 
@@ -105,15 +105,9 @@ namespace SimpleWeb {
       Mutex timer_mutex;
       std::unique_ptr<asio::steady_timer> timer GUARDED_BY(timer_mutex);
 
-      std::atomic<bool> closed;
+      std::atomic<bool> close_sent;
 
       asio::ip::tcp::endpoint endpoint; // The endpoint is read in SocketServer::write_handshake and must be stored so that it can be read reliably in all handlers, including on_error
-
-      void close() noexcept {
-        error_code ec;
-        socket->lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        socket->lowest_layer().cancel(ec);
-      }
 
       void set_timeout(long seconds = -1) noexcept {
         if(seconds == -1)
@@ -244,9 +238,9 @@ namespace SimpleWeb {
 
       void send_close(int status, const std::string &reason = "", std::function<void(const error_code &)> callback = nullptr) {
         // Send close only once (in case close is initiated by server)
-        if(closed)
+        if(close_sent)
           return;
-        closed = true;
+        close_sent = true;
 
         auto send_stream = std::make_shared<OutMessage>();
 
@@ -257,6 +251,13 @@ namespace SimpleWeb {
 
         // fin_rsv_opcode=136: message close
         send(std::move(send_stream), std::move(callback), 136);
+      }
+
+      /// Force close connection. Use `send_close()` instead for standard compliant connection close.
+      void close() noexcept {
+        error_code ec;
+        socket->lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        socket->lowest_layer().cancel(ec);
       }
 
       const asio::ip::tcp::endpoint &remote_endpoint() const noexcept {
@@ -274,7 +275,7 @@ namespace SimpleWeb {
       }
 
       /// Deprecated, please use remote_endpoint().address().to_string() instead.
-      DEPRECATED std::string remote_endpoint_address() const noexcept {
+      SW_DEPRECATED std::string remote_endpoint_address() const noexcept {
         try {
           return endpoint.address().to_string();
         }
@@ -284,7 +285,7 @@ namespace SimpleWeb {
       }
 
       /// Deprecated, please use remote_endpoint().port() instead.
-      DEPRECATED unsigned short remote_endpoint_port() const noexcept {
+      SW_DEPRECATED unsigned short remote_endpoint_port() const noexcept {
         try {
           return endpoint.port();
         }

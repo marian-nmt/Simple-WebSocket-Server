@@ -70,8 +70,8 @@ namespace SimpleWeb {
 
     private:
       template <typename... Args>
-      Connection(std::shared_ptr<ScopeRunner> handler_runner_, long timeout_idle, Args &&... args) noexcept
-          : handler_runner(std::move(handler_runner_)), socket(new socket_type(std::forward<Args>(args)...)), timeout_idle(timeout_idle), closed(false) {}
+      Connection(std::shared_ptr<ScopeRunner> handler_runner_, long timeout_idle, Args &&...args) noexcept
+          : handler_runner(std::move(handler_runner_)), socket(new socket_type(std::forward<Args>(args)...)), timeout_idle(timeout_idle), close_sent(false) {}
 
       std::shared_ptr<ScopeRunner> handler_runner;
 
@@ -84,15 +84,9 @@ namespace SimpleWeb {
       Mutex timer_mutex;
       std::unique_ptr<asio::steady_timer> timer GUARDED_BY(timer_mutex);
 
-      std::atomic<bool> closed;
+      std::atomic<bool> close_sent;
 
       asio::ip::tcp::endpoint endpoint; // The endpoint is read in SocketClient::upgrade and must be stored so that it can be read reliably in all handlers, including on_error
-
-      void close() noexcept {
-        error_code ec;
-        socket->lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-        socket->lowest_layer().cancel(ec);
-      }
 
       void set_timeout(long seconds = -1) noexcept {
         bool use_timeout_idle = false;
@@ -113,8 +107,12 @@ namespace SimpleWeb {
         timer->async_wait([connection_weak, use_timeout_idle](const error_code &ec) {
           if(!ec) {
             if(auto connection = connection_weak.lock()) {
-              if(use_timeout_idle)
-                connection->send_close(1000, "idle timeout"); // 1000=normal closure
+              if(use_timeout_idle) {
+                if(connection->close_sent)
+                  connection->close();
+                else
+                  connection->send_close(1000, "idle timeout"); // 1000=normal closure
+              }
               else
                 connection->close();
             }
@@ -240,9 +238,9 @@ namespace SimpleWeb {
 
       void send_close(int status, const std::string &reason = "", std::function<void(const error_code &)> callback = nullptr) {
         // Send close only once (in case close is initiated by client)
-        if(closed)
+        if(close_sent)
           return;
-        closed = true;
+        close_sent = true;
 
         auto out_message = std::make_shared<OutMessage>();
 
@@ -253,6 +251,13 @@ namespace SimpleWeb {
 
         // fin_rsv_opcode=136: message close
         send(out_message, std::move(callback), 136);
+      }
+
+      /// Force close connection. Use `send_close()` instead for standard compliant connection close.
+      void close() noexcept {
+        error_code ec;
+        socket->lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        socket->lowest_layer().cancel(ec);
       }
 
       const asio::ip::tcp::endpoint &remote_endpoint() const noexcept {
@@ -279,6 +284,8 @@ namespace SimpleWeb {
       CaseInsensitiveMultimap header;
       /// Set proxy server (server:port)
       std::string proxy_server;
+      /// Set proxy authorization (username:password)
+      std::string proxy_auth;
     };
     /// Set before calling start().
     Config config;
@@ -365,22 +372,33 @@ namespace SimpleWeb {
     }
 
     std::pair<std::string, unsigned short> parse_host_port(const std::string &host_port, unsigned short default_port) const noexcept {
-      std::pair<std::string, unsigned short> parsed_host_port;
-      std::size_t host_end = host_port.find(':');
-      if(host_end == std::string::npos) {
-        parsed_host_port.first = host_port;
-        parsed_host_port.second = default_port;
+      std::string host, port;
+      host.reserve(host_port.size());
+      bool parse_port = false;
+      int square_count = 0; // To parse IPv6 addresses
+      for(auto chr : host_port) {
+        if(chr == '[')
+          ++square_count;
+        else if(chr == ']')
+          --square_count;
+        else if(square_count == 0 && chr == ':')
+          parse_port = true;
+        else if(!parse_port)
+          host += chr;
+        else
+          port += chr;
       }
+
+      if(port.empty())
+        return {std::move(host), default_port};
       else {
-        parsed_host_port.first = host_port.substr(0, host_end);
         try {
-          parsed_host_port.second = static_cast<unsigned short>(stoul(host_port.substr(host_end + 1)));
+          return {std::move(host), static_cast<unsigned short>(std::stoul(port))};
         }
         catch(...) {
-          parsed_host_port.second = default_port;
+          return {std::move(host), default_port};
         }
       }
-      return parsed_host_port;
     }
 
     virtual void connect() = 0;
